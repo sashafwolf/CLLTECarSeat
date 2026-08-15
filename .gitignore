@@ -1,0 +1,50 @@
+# Secrets -- never track
+.env
+.env.*
+*_consent.json
+
+# Runtime state / generated data
+*.pid
+*.log
+*.db
+*.db-journal
+collette_dream_state.json
+collette_idle_state.json
+idle_test_state.json
+dream_test_state.json
+
+# Private diary content -- not for shared/repo review
+anomaly_diary/
+collette_diary/
+diary_*.txt
+
+# Data / vector stores
+collette_db/
+collette_memory/
+collette_vision/
+chorus_ledger/
+logs/
+
+# Nested project / other repos -- do not vendor
+dominion_test_worktree/
+oldprojects/
+
+# Large binaries -- do not belong in git history
+*.onnx
+*.onnx.json
+*.exe
+*.png
+piper/
+TTS_Modules/
+
+# IDE / env / cache
+.claude/
+.idea/
+.vs/
+.vscode/
+.venv/
+__pycache__/
+*.pyc
+
+# Backup snapshots superseded by git history going forward
+*.bak_pre_*
