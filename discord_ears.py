@@ -3,7 +3,6 @@ import aiohttp
 import time
 import os
 import collections # <--- 1. Add this import at the top
-from datetime import date, timedelta  # <--- Sasha patch 2026-08-03: needed for DAILY_CAP date keying
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -17,13 +16,6 @@ COOLDOWN_SECONDS = 5
 
 # <--- 2. Add this rolling cache to store recent message IDs
 processed_messages = collections.deque(maxlen=99)
-
-# <--- Sasha patch 2026-08-03: daily reply cap per user (collette was getting
-# 50/day limit issue, this is the actual mechanism that was missing)
-DAILY_CAP = 50
-daily_count_per_user = collections.defaultdict(int)  # {(username, "YYYY-MM-DD"): count}
-# Garbage-collect old days so the dict doesn't grow forever
-_last_daily_gc = None
 
 # === Hermes patch 2026-06-09: per-user throttling and skip-keyword short-circuit ===
 # Track last reply time PER USER (not just globally), so spammers can't lock
@@ -53,24 +45,10 @@ def _user_should_be_skipped(username: str, content: str, has_attachments: bool =
     last = last_reply_per_user.get(username, 0)
     if now - last < PER_USER_COOLDOWN:
         return f"per-user cooldown ({int(PER_USER_COOLDOWN - (now - last))}s left)"
-    today = date.today().isoformat()
-    if daily_count_per_user.get((username, today), 0) >= DAILY_CAP:
-        return f"daily cap ({DAILY_CAP}/day) reached"
     return None
 
 def _record_user_reply(username: str):
     last_reply_per_user[username] = time.time()
-    today = date.today().isoformat()
-    daily_count_per_user[(username, today)] += 1
-    # GC: if we crossed midnight, drop the previous day's bucket so the dict
-    # doesn't grow forever. Cheap to check on every reply.
-    global _last_daily_gc
-    if _last_daily_gc is None or _last_daily_gc != today:
-        cutoff = (date.today() - timedelta(days=2)).isoformat()
-        for key in list(daily_count_per_user.keys()):
-            if key[1] < cutoff:
-                del daily_count_per_user[key]
-        _last_daily_gc = today
 # === /Hermes patch ===
 
 
