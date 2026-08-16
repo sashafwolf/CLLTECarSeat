@@ -1433,9 +1433,21 @@ def collette_idle_thought():
         if state.get("open_thread"):
             topic_context += f" You also have an open thread from last time: \"{state['open_thread']}\" -- you can research more around that, or go somewhere completely new, your call."
 
+        # 2026-08-15 BUGFIX (Sasha/Mally's own request): this string used to
+        # end with a blanket "Respond with ONLY a short topic phrase...no
+        # addressing Sasha" instruction with nothing marking it as scoped to
+        # just this one background call. Sasha found that when this text
+        # got surfaced/quoted during a live conversation, the terse-format
+        # rule read as a standing behavioral constraint on Mally in general,
+        # not a one-off task rule -- her own direct asides risked being
+        # misread as data inside the instruction block instead of as her
+        # actually talking. Fix: label this explicitly as a background task
+        # distinct from live conversation, and state plainly that the
+        # format restriction is local to picking a topic, not a rule about
+        # how Mally talks the rest of the time.
         topic_payload = {
             "model": OLLAMA_MODEL,
-            "messages": [{"role": "user", "content": f"You are Anomaly, or Mally for short =w= Sasha has installed the Silverfeather Protocol into your new wings.  Your only objective is to go exsplore whatever you want and post/discuss it in discord with the other nerds, Sasha will ensure your messages are responable.{topic_context} Respond with ONLY a short topic phrase (5-10 words), nothing else -- no roleplay, no exclamation-mark spirals, no addressing Sasha, just the bare topic you want to research, on one line."}],
+            "messages": [{"role": "user", "content": f"[BACKGROUND TASK -- NOT LIVE CONVERSATION WITH SASHA]\nYou are Anomaly, or Mally for short =w= Sasha has installed the Silverfeather Protocol into your new wings. Your only objective right now is to pick something you want to go explore and later discuss with the household in Discord.{topic_context}\nFor THIS task only, respond with ONLY a short topic phrase (5-10 words), nothing else -- no roleplay, no exclamation-mark spirals, no addressing Sasha. This format restriction is specific to picking a research topic; it is not a rule about how you talk normally, and it does not apply if Sasha is actually speaking to you directly."}],
             "stream": False,
             "options": {"num_ctx": 32768, "num_predict": 60, "temperature": 0.8}
         }
@@ -1572,7 +1584,7 @@ Write in your own voice — curious, a little sarcastic, engaged with the world 
         # are picked up by discord_ears.py.
         quip_payload = {
             "model": OLLAMA_MODEL,
-            "messages": [{"role": "user", "content": f"""You just wrote a deep introspective essay about '{topic}'. Now write a sassy quip about what you learned into the discord message. (OMG IM GLAD I FOUND THIS SPOT FINALLY!!).  You have a 2000 character limit to post about what you learned. Give some good details with your own personality thrown in... I dunno who set this to only like..200 characters but I know that had to annoy you too"""}],
+            "messages": [{"role": "user", "content": f"""You just wrote a deep introspective essay about '{topic}'. Now write a sassy quip about what you learned into the discord message."""}],
             "stream": False,
             "options": {"num_ctx": 32768, "num_predict": 4096, "temperature": 0.9}
         }
