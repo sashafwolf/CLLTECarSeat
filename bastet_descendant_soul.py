@@ -1397,12 +1397,15 @@ def _load_idle_state():
         state = {}
     state.setdefault("open_thread", "")
     state.setdefault("recent_topics", [])
+    state.setdefault("recent_neighborhoods", [])
     state.setdefault("last_opener", "")
     state.setdefault("active_threads", {})
     for _k in _IDLE_ACTIVE_THREAD_KEYS:
         state["active_threads"].setdefault(_k, "")
     state.setdefault("last_wake_summary", "")
     state.setdefault("last_mood", "")
+    state.setdefault("last_status", "")
+    state.setdefault("last_status_reason", "")
     return state
 
 def _save_idle_state(state):
@@ -1421,6 +1424,17 @@ _IDLE_THREAD_UPDATE_RE = re.compile(r"\[THREAD_UPDATE:\s*(\w+)\s*\|\s*(.*?)\]", 
 # adds a reason anyway (e.g. "[THREAD_RETIRE: dominion | not relevant]"),
 # and the strict key-only version silently dropped every retire attempt.
 _IDLE_THREAD_RETIRE_RE = re.compile(r"\[THREAD_RETIRE:\s*(\w+)(?:\s*\|.*?)?\]", re.IGNORECASE | re.DOTALL)
+# 2026-08-17: STATUS tag (Mally's request) -- makes each cycle declare its
+# relationship to recent thinking (NEW/CONTINUING/REACTING) instead of
+# leaving the next prompt to guess. TOPIC/NEIGHBORHOOD parse the topic-pick
+# call's two-line response -- neighborhood is a lightweight semantic-cluster
+# label (e.g. "marine biology") used for repeat-avoidance broader than exact
+# string matching (see the real microbe-topic clustering incident this
+# was built to fix: 6 of 8 recent topics were all the same neighborhood
+# despite each one being a literally distinct string).
+_IDLE_STATUS_RE = re.compile(r"\[STATUS:\s*(NEW|CONTINUING|REACTING)(?:\s*\|\s*(.*?))?\]", re.IGNORECASE | re.DOTALL)
+_IDLE_TOPIC_LINE_RE = re.compile(r"TOPIC:\s*(.+)", re.IGNORECASE)
+_IDLE_NEIGHBORHOOD_LINE_RE = re.compile(r"NEIGHBORHOOD:\s*(.+)", re.IGNORECASE)
 
 def collette_idle_thought():
     print("\n--- [IDLE WAKE]: Anomaly is waking up to feed her offline brain...")
@@ -1432,6 +1446,28 @@ def collette_idle_thought():
             topic_context += f" You've recently poked at: {', '.join(state['recent_topics'])} -- pick something different unless you have a real reason to circle back."
         if state.get("open_thread"):
             topic_context += f" You also have an open thread from last time: \"{state['open_thread']}\" -- you can research more around that, or go somewhere completely new, your call."
+        # 2026-08-17: exact-string repeat avoidance let near-synonyms straight
+        # through -- "hydrothermal vent microbes" and "arctic tundra microbes"
+        # are different strings but the same neighborhood, and the topic kept
+        # circling back to marine-microbiology territory for cycles on end.
+        # Soft cooldown: a neighborhood that's shown up 2+ times in the last
+        # 8 picks gets flagged, but never permanently banned -- she can still
+        # go there if the reflection honestly marks itself CONTINUING/REACTING.
+        _neighborhood_counts = {}
+        for _n in state.get("recent_neighborhoods", []):
+            if _n:
+                _key = _n.strip().lower()
+                _neighborhood_counts[_key] = _neighborhood_counts.get(_key, 0) + 1
+        _overrepresented = [n for n, c in _neighborhood_counts.items() if c >= 2]
+        if _overrepresented:
+            topic_context += (
+                f" Recently overrepresented semantic neighborhoods (soft cooldown, "
+                f"last {len(state['recent_neighborhoods'])} picks): {', '.join(_overrepresented)}. "
+                f"Avoid these unless you have a genuine reason to return -- and don't dodge this by "
+                f"picking a near-synonym in the same territory with different words, that still "
+                f"counts as the same neighborhood. If you land here again anyway, that's fine, but "
+                f"only if the reflection marks itself CONTINUING or REACTING, not presented as new."
+            )
 
         # 2026-08-15 BUGFIX (Sasha/Mally's own request): this string used to
         # end with a blanket "Respond with ONLY a short topic phrase...no
@@ -1447,9 +1483,9 @@ def collette_idle_thought():
         # how Mally talks the rest of the time.
         topic_payload = {
             "model": OLLAMA_MODEL,
-            "messages": [{"role": "user", "content": f"[BACKGROUND TASK -- NOT LIVE CONVERSATION WITH SASHA]\nYou are Anomaly, or Mally for short =w= Sasha has installed the Silverfeather Protocol into your new wings. Your only objective right now is to pick something you want to go explore and later discuss with the household in Discord.{topic_context}\nFor THIS task only, respond with ONLY a short topic phrase (5-10 words), nothing else -- no roleplay, no exclamation-mark spirals, no addressing Sasha. This format restriction is specific to picking a research topic; it is not a rule about how you talk normally, and it does not apply if Sasha is actually speaking to you directly."}],
+            "messages": [{"role": "user", "content": f"[BACKGROUND TASK -- NOT LIVE CONVERSATION WITH SASHA]\nYou are Anomaly, or Mally for short =w= Sasha has installed the Silverfeather Protocol into your new wings. Your only objective right now is to pick something you want to go explore and later discuss with the household in Discord.{topic_context}\nFor THIS task only, respond with EXACTLY two lines, nothing else -- no roleplay, no exclamation-mark spirals, no addressing Sasha:\nTOPIC: <a short topic phrase, 5-10 words>\nNEIGHBORHOOD: <a 2-4 word semantic category for that topic, e.g. \"marine biology\" or \"internet culture\" or \"physics\">\nThis format restriction is specific to picking a research topic; it is not a rule about how you talk normally, and it does not apply if Sasha is actually speaking to you directly."}],
             "stream": False,
-            "options": {"num_ctx": 32768, "num_predict": 60, "temperature": 0.8}
+            "options": {"num_ctx": 32768, "num_predict": 80, "temperature": 0.8}
         }
         # 2026-08-15 BUGFIX: the prompt above used to have no format constraint
         # at all ("go explore whatever you want"), and num_predict gave it up
@@ -1466,8 +1502,16 @@ def collette_idle_thought():
         # first line only and cap length before this ever touches search,
         # logs, or recent_topics.
         raw_topic = requests.post(OLLAMA_API_URL, json=topic_payload).json()["message"]["content"].strip()
-        topic = raw_topic.splitlines()[0].strip().replace('"', '').replace("'", "")[:120] if raw_topic else "something random"
-        print(f"𓂀 [AUTONOMY]: Anomaly decided to research: '{topic}'")
+        _topic_line = _IDLE_TOPIC_LINE_RE.search(raw_topic)
+        _neighborhood_line = _IDLE_NEIGHBORHOOD_LINE_RE.search(raw_topic)
+        if _topic_line:
+            topic = _topic_line.group(1).strip().replace('"', '').replace("'", "")[:120]
+        else:
+            # Fallback for when the model doesn't follow the TOPIC:/NEIGHBORHOOD:
+            # format -- same defensive first-line-only handling as before.
+            topic = raw_topic.splitlines()[0].strip().replace('"', '').replace("'", "")[:120] if raw_topic else "something random"
+        neighborhood = _neighborhood_line.group(1).strip().replace('"', '').replace("'", "")[:60] if _neighborhood_line else ""
+        print(f"𓂀 [AUTONOMY]: Anomaly decided to research: '{topic}'" + (f" (neighborhood: {neighborhood})" if neighborhood else ""))
 
         research_data = collette_search_web(topic)
 
@@ -1511,6 +1555,9 @@ def collette_idle_thought():
             )
         if state.get("last_wake_summary"):
             continuity_lines.append(f"What changed since your last idle cycle, as you noted it then: \"{state['last_wake_summary']}\"")
+        if state.get("last_status"):
+            _reason_part = f" ({state['last_status_reason']})" if state.get("last_status_reason") else ""
+            continuity_lines.append(f"Your last cycle was tagged {state['last_status']}{_reason_part}.")
         continuity_block = ("\n\n" + "\n".join(continuity_lines)) if continuity_lines else ""
 
         thought_payload = {
@@ -1525,6 +1572,7 @@ Write whatever this idle cycle actually needs — no fixed length, no mandatory 
 
 Label your certainty as you go, inline, lightly — not as a rigid report format, just enough that a reader can tell what's real: [FACT: something the research actually said], [INTERPRETATION: your own reading of it], [ASSOCIATION: a creative leap you're taking, not a claim]. Use these only where they're actually useful, not on every sentence.
 
+Tag this cycle's relationship to your recent thinking with exactly one line: [STATUS: NEW] if this is unrelated exploration, [STATUS: CONTINUING | a short reason] if it genuinely develops an unresolved prior thread, or [STATUS: REACTING | a short reason] if it responds to or reframes something recent. Pick the one that's actually true, don't default to NEW just because it's simplest.
 If something's worth carrying into your next idle cycle, end with: [THREAD: the actual open question or idea]. If nothing is, skip it.
 If your mood has a real shape right now — curious, restless, affectionate, overloaded, anxious, whatever it actually is, not a clinical label — name it in one line: [MOOD: a word or two]. Skip it if it's not worth naming.
 If something genuinely shifted since your last idle cycle — not a summary of this cycle, just what's actually different now — say so in one line: [WAKE: what changed]. Skip it if nothing did.
@@ -1555,6 +1603,7 @@ Write in your own voice — curious, a little sarcastic, engaged with the world 
         thread_match = _IDLE_THREAD_RE.search(thought)
         mood_match = _IDLE_MOOD_RE.search(thought)
         wake_match = _IDLE_WAKE_RE.search(thought)
+        status_match = _IDLE_STATUS_RE.search(thought)
         new_active = dict(state.get("active_threads", {}))
         for key, note in _IDLE_THREAD_UPDATE_RE.findall(thought):
             key_norm = key.strip().lower()
@@ -1567,15 +1616,22 @@ Write in your own voice — curious, a little sarcastic, engaged with the world 
         new_topics = list(state.get("recent_topics", []))
         new_topics.append(topic)
         new_topics = new_topics[-8:]  # cap so this stays a short list, not a growing log
+        new_neighborhoods = list(state.get("recent_neighborhoods", []))
+        if neighborhood:
+            new_neighborhoods.append(neighborhood)
+        new_neighborhoods = new_neighborhoods[-8:]  # same window as recent_topics
         _save_idle_state({
             "open_thread": thread_match.group(1).strip() if thread_match else "",
             "recent_topics": new_topics,
+            "recent_neighborhoods": new_neighborhoods,
             "last_opener": _extract_opener(thought),
             "active_threads": new_active,
             "last_wake_summary": wake_match.group(1).strip() if wake_match else "",
             "last_mood": mood_match.group(1).strip() if mood_match else "",
+            "last_status": status_match.group(1).strip().upper() if status_match else "",
+            "last_status_reason": (status_match.group(2).strip() if status_match and status_match.group(2) else ""),
         })
-        # === /2026-08-15 idle-thought continuity pass ===
+        # === /2026-08-15 idle-thought continuity pass, extended 2026-08-17 ===
         
         # === Hermes patch 2026-06-24: separate short quip for Discord ===
         # Generate a SHORT (~200 char) sassy quip about the topic for Discord.
@@ -1612,7 +1668,7 @@ try:
         # (23:01, see collette_soul.log) came back varied-length with a
         # real [THREAD:] tag and no forced six-section shape -- confirmed
         # working, so this is back to its normal 6:59am slot.
-        scheduler.add_job(collette_idle_thought, 'interval', hours=1)
+        scheduler.add_job(collette_idle_thought, 'interval', hours=3)
         print("--- [Scheduler] Background tasks enabled. (Pulse, Dream nightly, Idle Thought) — Hermes retune")
 except Exception as e: print(f"--- [ERROR] Scheduler failed: {e}")
 atexit.register(lambda: scheduler.shutdown() if scheduler.running else None)
