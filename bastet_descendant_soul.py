@@ -949,20 +949,34 @@ def collette_jira_search(jql):
     Blank target defaults to the 20 most recently updated DOM issues.
     Uses POST /search/jql, not the old GET /search -- confirmed live that
     Atlassian has deprecated GET /search (returns 410 Gone now) in favor
-    of this endpoint."""
+    of this endpoint.
+
+    2026-08-17: maxResults was hardcoded at 25 with no signal when a query
+    had more matches than that -- a survey-style JQL (e.g. "statusCategory
+    != Done") silently dropped anything past the 25th, sorted-oldest-first
+    result, with nothing in the reply hinting it was a partial view. Bumped
+    to 100 (confirmed live: the endpoint accepts and returns up to 100 per
+    page) and the response's own `isLast` field is now checked so a still-
+    truncated result says so instead of reading as complete."""
     jql = (jql or "").strip() or f"project = {JIRA_DEFAULT_PROJECT} ORDER BY updated DESC"
     resp = _jira_request(
         "POST", "/rest/api/3/search/jql",
-        json={"jql": jql, "maxResults": 25, "fields": ["summary", "status", "priority", "assignee"]}
+        json={"jql": jql, "maxResults": 100, "fields": ["summary", "status", "priority", "assignee"]}
     )
     if isinstance(resp, str):
         return resp
     if resp.status_code != 200:
         return f"System Note: Jira search failed ({resp.status_code}): {resp.text[:1000]}"
-    issues = resp.json().get("issues", [])
+    body = resp.json()
+    issues = body.get("issues", [])
     if not issues:
         return f"System Note: Jira search for '{jql}' returned no issues."
     lines = [f"System Note: {len(issues)} issue(s) for JQL '{jql}':"]
+    if body.get("isLast") is False:
+        lines.append(
+            f"  (truncated -- more than {len(issues)} issues match this JQL; "
+            f"narrow it further, e.g. by priority/component/assignee, to see the rest)"
+        )
     for i in issues:
         f = i["fields"]
         assignee = (f.get("assignee") or {}).get("displayName", "unassigned")
