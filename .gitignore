@@ -24,6 +24,7 @@ collette_memory/
 collette_vision/
 chorus_ledger/
 logs/
+healthchecks/
 
 # Nested project / other repos -- do not vendor
 dominion_test_worktree/
