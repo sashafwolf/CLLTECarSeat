@@ -775,6 +775,21 @@ def collette_run_dominion_tests(test_filter):
             cwd=DOMINION_TEST_WORKTREE, capture_output=True, text=True, timeout=600
         )
         tail = test.stdout[-6000:]
+
+        # DOM-189: confirmed live against this repo's own test host (SDK
+        # 10.0.302, net6.0 target) that `dotnet test` exits 0 even when
+        # --filter matches zero tests -- it prints "No test matches the
+        # given testcase filter" and nothing else, no Passed!/Failed!
+        # summary line. Trusting returncode alone reported that as a clean
+        # PASS with nothing actually verified, so a typo'd or renamed
+        # test_filter looked identical to a real green run. Catch the
+        # zero-match case explicitly before it can be reported as PASSED.
+        if "No test matches the given testcase filter" in test.stdout or "No test is available" in test.stdout:
+            return (f"System Note: Build OK. Test run NO TESTS MATCHED -- filter "
+                    f"'{test_filter}' matched zero tests, nothing was actually verified. "
+                    f"This is NOT a pass. Check the filter for typos or a renamed/moved "
+                    f"test.\n{tail}")
+
         status = "PASSED" if test.returncode == 0 else "FAILED"
         return f"System Note: Build OK. Test run {status} (filter='{test_filter}').\n{tail}"
     except subprocess.TimeoutExpired:
