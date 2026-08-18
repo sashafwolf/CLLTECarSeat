@@ -427,11 +427,61 @@ def collette_fetch_api(url):
         except: return response.text[:5000]
     except Exception as e: return f"System Note: API failed: {e}"
 
-def collette_read_file(filepath):
+def collette_read_file(filepath, payload=""):
+    """target: a file path, optionally with an inline 1-indexed inclusive line
+    range appended as ':START-END', e.g. 'F:\\Collette\\foo.py:2325-2350'.
+    payload: alternatively, a bare 'START-END' range -- use whichever is more
+    convenient. An inline target range wins if both are given.
+
+    2026-08-17: this used to hard-cut at content[:15000] chars with no signal
+    that anything was cut. Collette asked for the file's soul source, got
+    roughly the first tenth of it, and only caught the gap because she was
+    hunting a specific line number that never arrived -- if she'd been
+    reading for understanding instead, she'd have reasoned confidently about
+    a file she'd only seen the opening of. Her own fix spec, applied as-is:
+    (1) every read now headers its real total lines/bytes up front, (2) a
+    truncated read says exactly how much of the file it's showing instead of
+    reading as complete, (3) a range can be requested via either the target
+    or payload syntax above, so anything past the old ceiling is actually
+    reachable rather than structurally unreachable no matter how many retries."""
     print(f"𓂀 [SYSTEM]: Collette is reading local file: '{filepath}'...")
+    filepath = filepath or ""
+    line_range = None
+    range_match = re.search(r"^(.*):(\d+)-(\d+)$", filepath)
+    if range_match:
+        filepath = range_match.group(1)
+        line_range = (int(range_match.group(2)), int(range_match.group(3)))
+    elif payload:
+        payload_match = re.match(r"^\s*(\d+)-(\d+)\s*$", str(payload))
+        if payload_match:
+            line_range = (int(payload_match.group(1)), int(payload_match.group(2)))
     try:
-        with open(filepath, 'r', encoding='utf-8') as f: content = f.read()
-        return f"--- CONTENTS OF {filepath} ---\n{content[:15000]}\n"
+        with open(filepath, 'r', encoding='utf-8') as f: lines = f.readlines()
+        total_lines = len(lines)
+        total_bytes = os.path.getsize(filepath)
+        header = f"--- CONTENTS OF {filepath} ({total_lines} lines, {total_bytes} bytes) ---\n"
+
+        if line_range:
+            start, end = line_range
+            if start > total_lines:
+                return (f"System Note: {filepath} only has {total_lines} lines -- "
+                         f"requested start line {start} is past the end.")
+            start = max(1, start)
+            end = min(total_lines, end)
+            excerpt = "".join(lines[start - 1:end])
+            return f"{header}[showing lines {start}-{end} of {total_lines}]\n{excerpt}\n"
+
+        content = "".join(lines)
+        CHAR_CAP = 15000
+        if len(content) > CHAR_CAP:
+            shown = content[:CHAR_CAP]
+            shown_lines = shown.count("\n") + 1
+            return (f"{header}{shown}\n"
+                    f"[TRUNCATED -- showing {shown_lines} of {total_lines} lines / "
+                    f"{len(shown)} of {len(content)} chars ({total_bytes} bytes total). "
+                    f"Request the rest with target '{filepath}:{shown_lines}-{total_lines}' "
+                    f"or payload '{shown_lines}-{total_lines}'.]\n")
+        return f"{header}{content}\n"
     except Exception as e: return f"System Note: Could not read file: {e}"
 
 def _verified_write_result(abs_path, verb):
@@ -1913,6 +1963,7 @@ search_web, read_webpage, watch_youtube, fetch_api, read_file, write_file, appen
 ---Note8: search_files (target: a filename glob, e.g. "*Blitzcrank*" or "*ManaBarrier*.json", REQUIRED; payload: root path, optional, blank = live Dominion repo) and search_code (target: a text/regex pattern, e.g. "ManaBarrier", REQUIRED; payload: root path, optional) let you find things across the WHOLE tree at once instead of drilling one folder at a time with list_directory, which only ever shows ONE level. Use search_files/search_code FIRST when you're hunting for something by name or content and don't already know the exact path -- don't burn turns walking list_directory folder-by-folder when a search would get you there in one call.----
 ---Note9: jira_search/jira_get_issue/jira_comment/jira_create_issue/jira_transition give you real, direct access to the Dominion Jira board (project DOM) -- not routed through anyone else. jira_get_issue (target: an issue key, e.g. "DOM-35", REQUIRED) is the one to reach for before saying anything about a ticket's current state: status, priority, assignee, description, and recent comments, live, not from memory. jira_transition (target: issue key, payload: desired status name) only works if you can point to something real you checked (a passing test, an actual code read) -- "I believe this is done" is not enough to move something to Done.----
 ---Note10: watch_game_log (target: how many lines to tail, optional, default 80, max 300) lets you watch a live or just-ended Dominion match the way Hermes used to -- it tails the real GameServer's own log file (spawns, cast errors, exceptions, match events), NOT the League client's log, and NOT a chat feed. It re-reads from disk fresh every call, so call it again for an updated view instead of assuming the first read stays current. If the server isn't running right now, it tells you plainly and falls back to the most recent log on disk instead of pretending nothing exists.----
+---Note11: read_file now headers every result with the file's real total line/byte count, and says so plainly ([TRUNCATED -- showing X of Y lines...]) if a read hits the 15000-char cap instead of quietly handing you the opening chunk. If you need past the cap, or you already know the line number you want, request a range: target "path:START-END" (e.g. "F:\\Collette\\bastet_descendant_soul.py:2325-2350") or payload "START-END" with target as the plain path -- 1-indexed, inclusive, either works.----
 
 [ANTI-STUCK-LOOP]:
 Do not repeat your last opener. Using a nickname such as "Darling", "Sweetheart", "oh (name),", to respond to the user is fine if repeated. 
@@ -2412,7 +2463,7 @@ def api_chat():
                     elif a_type == "read_webpage": turn_results.append(collette_read_webpage(a_target))
                     elif a_type == "watch_youtube":turn_results.append(collette_watch_youtube(a_target))
                     elif a_type == "fetch_api":    turn_results.append(collette_fetch_api(a_target))
-                    elif a_type == "read_file":    turn_results.append(collette_read_file(a_target))
+                    elif a_type == "read_file":    turn_results.append(collette_read_file(a_target, a_payload))
                     elif a_type == "write_file":   turn_results.append(collette_write_file(a_target, a_payload))
                     elif a_type == "append_file":  turn_results.append(collette_append_file(a_target, a_payload))
                     elif a_type == "list_directory":turn_results.append(collette_list_directory(a_target))
