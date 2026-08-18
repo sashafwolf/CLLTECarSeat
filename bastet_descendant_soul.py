@@ -2302,22 +2302,50 @@ def api_chat():
                         # string failed json.loads silently, so the whole turn just
                         # degraded to spoken text with no error surfaced. See DOM-141
                         # proposal incident.
-                        max_tokens=8192,
+                        # 2026-08-17: 8192 hit the same wall on a full test-file
+                        # write_file payload (a real, non-degenerate ask, not a
+                        # runaway response) -- confirmed live that the Anthropic
+                        # SDK's non-streaming call refuses above ~20k-24k tokens
+                        # ("Streaming is required for operations that may take
+                        # longer than 10 minutes"), so 16384 is the doubled,
+                        # verified-safe ceiling rather than an arbitrary bump.
+                        max_tokens=16384,
                         system=system_text,
                         messages=claude_turns,
                         stop_sequences=["--- TOOL RESULTS ---"]
                     )
                     raw_response = next((b.text for b in claude_resp.content if b.type == "text"), "").strip()
+                    if claude_resp.stop_reason == "max_tokens":
+                        raw_response += (
+                            "\n\n[SYSTEM NOTE: This response was cut off by hitting the "
+                            "16384-token output limit, not a graceful stop. Anything after "
+                            "the cut point -- including a tool call -- did not happen. "
+                            "Split large writes into smaller pieces (e.g. append_file in "
+                            "passes) rather than one large payload.]"
+                        )
                 elif COLLETTE_BRAIN_MODE == "openrouter":
                     if openrouter_client is None:
                         raise RuntimeError("OPENROUTER_API_KEY is not set in .env")
+                    # 2026-08-17: this is the rung she falls to precisely when
+                    # Claude credits run out -- same silent-truncation class as
+                    # the Claude call above, never patched here. Matched to the
+                    # same 16384 ceiling, and OpenAI-compatible responses expose
+                    # finish_reason == "length" as their version of stop_reason.
                     or_resp = _openrouter_create_with_retry(
                         model=OPENROUTER_MODEL,
-                        max_tokens=8192,
+                        max_tokens=16384,
                         messages=ollama_messages,
                         stop=["--- TOOL RESULTS ---"]
                     )
                     raw_response = (or_resp.choices[0].message.content or "").strip()
+                    if or_resp.choices[0].finish_reason == "length":
+                        raw_response += (
+                            "\n\n[SYSTEM NOTE: This response was cut off by hitting the "
+                            "16384-token output limit, not a graceful stop. Anything after "
+                            "the cut point -- including a tool call -- did not happen. "
+                            "Split large writes into smaller pieces (e.g. append_file in "
+                            "passes) rather than one large payload.]"
+                        )
                 else:
                     payload = {
                         "model": OLLAMA_MODEL,
@@ -2325,7 +2353,7 @@ def api_chat():
                         "stream": False,
                         "options": {
                             "num_ctx": 65536,
-                            "num_predict": 8192,   # bumped 2026-08-14, see max_tokens note above
+                            "num_predict": 16384,   # see 2026-08-17 note on the Claude/OpenRouter call sites above
                             "temperature": 0.8,
                             "repeat_penalty": 1.15,
                             "stop": ["--- TOOL RESULTS ---"]
@@ -2333,7 +2361,16 @@ def api_chat():
                     }
                     response = requests.post(OLLAMA_API_URL, json=payload, timeout=360)
                     response.raise_for_status()
-                    raw_response = response.json()["message"]["content"].strip()
+                    ollama_body = response.json()
+                    raw_response = ollama_body["message"]["content"].strip()
+                    if ollama_body.get("done_reason") == "length":
+                        raw_response += (
+                            "\n\n[SYSTEM NOTE: This response was cut off by hitting the "
+                            "16384-token output limit, not a graceful stop. Anything after "
+                            "the cut point -- including a tool call -- did not happen. "
+                            "Split large writes into smaller pieces (e.g. append_file in "
+                            "passes) rather than one large payload.]"
+                        )
                 raw_response = _dedupe_repeated_paragraphs(raw_response)
                 print(f"\n𓂀 [INNER MONOLOGUE - TURN {current_turn} | {COLLETTE_BRAIN_MODE.upper()}]:\n{raw_response}")
                 print("-" * 50)
@@ -2751,29 +2788,50 @@ def api_anomaly_chat():
                 system_text, claude_turns = _split_system_and_turns(ollama_messages)
                 claude_resp = anthropic_client.messages.create(
                     model=CLAUDE_MODEL,
-                    max_tokens=8192,  # see 2026-08-14 note on the main-loop call site
+                    max_tokens=16384,  # see 2026-08-17 note on the main-loop call site
                     system=system_text,
                     messages=claude_turns,
                 )
                 raw_response = next((b.text for b in claude_resp.content if b.type == "text"), "").strip()
+                if claude_resp.stop_reason == "max_tokens":
+                    raw_response += (
+                        "\n\n[SYSTEM NOTE: This response was cut off by hitting the "
+                        "16384-token output limit, not a graceful stop. Anything after "
+                        "the cut point -- including a tool call -- did not happen.]"
+                    )
             elif COLLETTE_BRAIN_MODE == "openrouter":
                 if openrouter_client is None:
                     raise RuntimeError("OPENROUTER_API_KEY is not set in .env")
+                # see 2026-08-17 note on the main-loop OpenRouter call site
                 or_resp = _openrouter_create_with_retry(
                     model=OPENROUTER_MODEL,
-                    max_tokens=8192,
+                    max_tokens=16384,
                     messages=ollama_messages,
                 )
                 raw_response = (or_resp.choices[0].message.content or "").strip()
+                if or_resp.choices[0].finish_reason == "length":
+                    raw_response += (
+                        "\n\n[SYSTEM NOTE: This response was cut off by hitting the "
+                        "16384-token output limit, not a graceful stop. Anything after "
+                        "the cut point -- including a tool call -- did not happen.]"
+                    )
             else:
                 payload = {
                     "model": OLLAMA_MODEL,
                     "messages": ollama_messages,
-                    "stream": False
+                    "stream": False,
+                    "options": {"num_predict": 16384}  # see 2026-08-17 note above -- was unset, silently on Ollama's own default
                 }
                 resp = requests.post(OLLAMA_API_URL, json=payload, timeout=360)
                 resp.raise_for_status()
-                raw_response = resp.json().get("message", {}).get("content", "")
+                anomaly_body = resp.json()
+                raw_response = anomaly_body.get("message", {}).get("content", "")
+                if anomaly_body.get("done_reason") == "length":
+                    raw_response += (
+                        "\n\n[SYSTEM NOTE: This response was cut off by hitting the "
+                        "16384-token output limit, not a graceful stop. Anything after "
+                        "the cut point -- including a tool call -- did not happen.]"
+                    )
             raw_response = _dedupe_repeated_paragraphs(raw_response)
         except Exception as oe:
             print(f"𓂀 [DIRECT LINE]: {COLLETTE_BRAIN_MODE} error: {oe}")
